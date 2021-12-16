@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	gobgpapi "github.com/osrg/gobgp/api"
+	gobgpapi "github.com/osrg/gobgp/v3/api"
 	v1core "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
@@ -456,12 +456,12 @@ func (nrc *NetworkRoutingController) addExportPolicies() error {
 			&gobgpapi.Statement{
 				Conditions: &gobgpapi.Conditions{
 					PrefixSet: &gobgpapi.MatchSet{
-						MatchType: gobgpapi.MatchType_ANY,
-						Name:      "podcidrdefinedset",
+						Type: gobgpapi.MatchSet_ANY,
+						Name: "podcidrdefinedset",
 					},
 					NeighborSet: &gobgpapi.MatchSet{
-						MatchType: gobgpapi.MatchType_ANY,
-						Name:      "iBGPpeerset",
+						Type: gobgpapi.MatchSet_ANY,
+						Name: "iBGPpeerset",
 					},
 				},
 				Actions: &actions,
@@ -478,7 +478,7 @@ func (nrc *NetworkRoutingController) addExportPolicies() error {
 		// set BGP communities for the routes advertised to peers for VIPs
 		if len(nrc.nodeCommunities) > 0 {
 			bgpActions.Community = &gobgpapi.CommunityAction{
-				ActionType:  gobgpapi.CommunityActionType_COMMUNITY_ADD,
+				Type:        gobgpapi.CommunityAction_ADD,
 				Communities: nrc.nodeCommunities,
 			}
 		}
@@ -488,12 +488,12 @@ func (nrc *NetworkRoutingController) addExportPolicies() error {
 		statements = append(statements, &gobgpapi.Statement{
 			Conditions: &gobgpapi.Conditions{
 				PrefixSet: &gobgpapi.MatchSet{
-					MatchType: gobgpapi.MatchType_ANY,
-					Name:      "servicevipsdefinedset",
+					Type: gobgpapi.MatchSet_ANY,
+					Name: "servicevipsdefinedset",
 				},
 				NeighborSet: &gobgpapi.MatchSet{
-					MatchType: gobgpapi.MatchType_ANY,
-					Name:      "externalpeerset",
+					Type: gobgpapi.MatchSet_ANY,
+					Name: "externalpeerset",
 				},
 			},
 			Actions: &bgpActions,
@@ -506,7 +506,7 @@ func (nrc *NetworkRoutingController) addExportPolicies() error {
 			// set BGP communities for the routes advertised to peers for the pod network
 			if len(nrc.nodeCommunities) > 0 {
 				actions.Community = &gobgpapi.CommunityAction{
-					ActionType:  gobgpapi.CommunityActionType_COMMUNITY_ADD,
+					Type:        gobgpapi.CommunityAction_ADD,
 					Communities: nrc.nodeCommunities,
 				}
 			}
@@ -516,12 +516,12 @@ func (nrc *NetworkRoutingController) addExportPolicies() error {
 			statements = append(statements, &gobgpapi.Statement{
 				Conditions: &gobgpapi.Conditions{
 					PrefixSet: &gobgpapi.MatchSet{
-						MatchType: gobgpapi.MatchType_ANY,
-						Name:      "podcidrdefinedset",
+						Type: gobgpapi.MatchSet_ANY,
+						Name: "podcidrdefinedset",
 					},
 					NeighborSet: &gobgpapi.MatchSet{
-						MatchType: gobgpapi.MatchType_ANY,
-						Name:      "externalpeerset",
+						Type: gobgpapi.MatchSet_ANY,
+						Name: "externalpeerset",
 					},
 				},
 				Actions: &actions,
@@ -596,12 +596,12 @@ func (nrc *NetworkRoutingController) addImportPolicies() error {
 	statements = append(statements, &gobgpapi.Statement{
 		Conditions: &gobgpapi.Conditions{
 			PrefixSet: &gobgpapi.MatchSet{
-				MatchType: gobgpapi.MatchType_ANY,
-				Name:      "servicevipsdefinedset",
+				Type: gobgpapi.MatchSet_ANY,
+				Name: "servicevipsdefinedset",
 			},
 			NeighborSet: &gobgpapi.MatchSet{
-				MatchType: gobgpapi.MatchType_ANY,
-				Name:      "allpeerset",
+				Type: gobgpapi.MatchSet_ANY,
+				Name: "allpeerset",
 			},
 		},
 		Actions: &actions,
@@ -610,12 +610,12 @@ func (nrc *NetworkRoutingController) addImportPolicies() error {
 	statements = append(statements, &gobgpapi.Statement{
 		Conditions: &gobgpapi.Conditions{
 			PrefixSet: &gobgpapi.MatchSet{
-				MatchType: gobgpapi.MatchType_ANY,
-				Name:      "defaultroutedefinedset",
+				Type: gobgpapi.MatchSet_ANY,
+				Name: "defaultroutedefinedset",
 			},
 			NeighborSet: &gobgpapi.MatchSet{
-				MatchType: gobgpapi.MatchType_ANY,
-				Name:      "allpeerset",
+				Type: gobgpapi.MatchSet_ANY,
+				Name: "allpeerset",
 			},
 		},
 		Actions: &actions,
