@@ -15,9 +15,10 @@ import (
 	"github.com/cloudnativelabs/kube-router/pkg/metrics"
 	"github.com/cloudnativelabs/kube-router/pkg/options"
 	"github.com/cloudnativelabs/kube-router/pkg/utils"
-	"github.com/coreos/go-iptables/iptables"
+	"github.com/butterflyy/go-iptables/iptables"
 	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/klog/v2"
+	listers "k8s.io/client-go/listers/core/v1"
 
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
@@ -85,6 +86,7 @@ type NetworkPolicyController struct {
 	NetworkPolicyEventHandler cache.ResourceEventHandler
 
 	filterTableRules bytes.Buffer
+	podPids map[string]int
 }
 
 // internal structure to represent a network policy
@@ -108,6 +110,7 @@ type networkPolicyInfo struct {
 
 // internal structure to represent Pod
 type podInfo struct {
+	pid       int
 	ip        string
 	name      string
 	namespace string
@@ -160,11 +163,11 @@ func (npc *NetworkPolicyController) Run(healthChan chan<- *healthcheck.Controlle
 	npc.healthChan = healthChan
 
 	// setup kube-router specific top level custom chains (KUBE-ROUTER-INPUT, KUBE-ROUTER-FORWARD, KUBE-ROUTER-OUTPUT)
-	npc.ensureTopLevelChains()
+	//npc.ensureTopLevelChains()
 
 	// setup default network policy chain that is applied to traffic from/to the pods that does not match any network
 	// policy
-	npc.ensureDefaultNetworkPolicyChain()
+	//npc.ensureDefaultNetworkPolicyChain()
 
 	// Full syncs of the network policy controller take a lot of time and can only be processed one at a time,
 	// therefore, we start it in it's own goroutine and request a sync through a single item channel
@@ -214,6 +217,310 @@ func (npc *NetworkPolicyController) RequestFullSync() {
 	}
 }
 
+
+func (npc *NetworkPolicyController) clearAllNetworkPolicies() error {
+	npc.podPids = make(map[string]int)
+
+	iptablesCmdHandler, err := iptables.New()
+	if err != nil{
+		return err
+	}
+
+	podLister := listers.NewPodLister(npc.podLister)
+	pods, err := podLister.List(labels.Everything())
+	if err != nil{
+		return err
+	}
+
+	for _, pod :=range(pods){
+		//不是当前node的pod就不处理
+		if npc.nodeIP.String() != pod.Status.HostIP{
+			continue
+		}
+
+		if pod.Spec.HostNetwork{
+			continue
+		}
+
+		ready := false
+		for _, condition := range(pod.Status.Conditions){
+			if condition.Type == "Ready" && condition.Status == "True"{
+				ready = true
+				break
+			}
+		}
+
+		if !ready{
+			continue
+		}
+
+		containerURL := pod.Status.ContainerStatuses[0].ContainerID
+		pid, err := npc.getPodPid(containerURL)
+		if err != nil{
+			return fmt.Errorf("get pod pid failed, pidip(%v) %v", pod.Status.PodIP, err)
+		}
+
+		iptablesCmdHandler.SetNspid(strconv.Itoa(pid))
+		{
+			//删除pod的入站iptables
+			rules, err := iptablesCmdHandler.List("filter", "INPUT")
+			if err != nil {
+				klog.Fatalf("failed to list rules in filter table OUT chain due to %s", err.Error())
+			}
+
+			for i := len(rules) - 1; i >= 1; i-- {
+				iptablesCmdHandler.Delete("filter", "INPUT", strconv.Itoa(i))
+			}
+		}
+		{
+			//删除pod的出站iptables
+			rules, err := iptablesCmdHandler.List("filter", "OUTPUT")
+			if err != nil {
+				klog.Fatalf("failed to list rules in filter table OUT chain due to %s", err.Error())
+			}
+
+			for i := len(rules) - 1; i >= 1; i-- {
+				iptablesCmdHandler.Delete("filter", "OUTPUT", strconv.Itoa(i))
+			}
+		}
+
+		//缓存pid
+		npc.podPids[containerURL] = pid
+	}
+
+
+
+	return nil
+}
+
+func (npc *NetworkPolicyController) syncPodNetworkPolicy(networkPoliciesInfo []networkPolicyInfo) (error){
+	iptablesCmdHandler, err := iptables.New()
+	if err != nil {
+		klog.Fatalf("Failed to initialize iptables executor due to %s", err.Error())
+		return err
+	}
+
+	for _, policy := range networkPoliciesInfo {
+		//set ingress
+		if policy.policyType == kubeIngressPolicyType || 
+		policy.policyType == kubeBothPolicyType {
+			for _, pod := range policy.targetPods{
+				iptablesCmdHandler.SetNspid(strconv.Itoa(pod.pid))
+				//获取是否已经设置过
+				rules, err := iptablesCmdHandler.List("filter", "INPUT")
+				if err != nil {
+					klog.Fatalf("failed to list rules in filter table OUT chain due to %s", err.Error())
+				}
+
+				fmt.Printf("rules %v, rulessize(%d) \n", rules, len(rules))
+				if len(rules) == 1{
+					//拒绝所有的其他请求
+					args := []string{"-m", "conntrack", "--ctstate", "NEW", "-j", "REJECT"}
+					iptablesCmdHandler.Insert("filter", "INPUT", 1, args...)
+					if err != nil {
+						return fmt.Errorf("append failed: %s", err)
+					}
+				}
+
+				//增加新的允许的iptables
+				for _, ingressRule := range policy.ingressRules{
+					if ingressRule.matchAllSource{
+						if ingressRule.matchAllPorts{
+							args := []string{"-m", "conntrack", "--ctstate", "NEW", "-j", "ACCEPT"}
+							iptablesCmdHandler.Insert("filter", "INPUT", 1, args...)
+							if err != nil {
+								return fmt.Errorf("append failed: %s", err)
+							}
+						} else {
+							for _, port := range ingressRule.ports{
+								args := []string{"-m", "conntrack", "--ctstate", "NEW", "-p", port.protocol, "--dport",port.port, "-j", "ACCEPT"}
+								iptablesCmdHandler.Insert("filter", "INPUT", 1, args...)
+								if err != nil {
+									return fmt.Errorf("append failed: %s", err)
+								}
+							}
+						}
+					} else{
+						if ingressRule.matchAllPorts{
+							for _, srcPod := range ingressRule.srcPods{
+								args := []string{"-m", "conntrack", "--ctstate", "NEW", "-s", srcPod.ip, "-j", "ACCEPT"}
+								iptablesCmdHandler.Insert("filter", "INPUT", 1, args...)
+								if err != nil {
+									return fmt.Errorf("append failed: %s", err)
+								}
+							}
+
+							for _, srcIP := range ingressRule.srcIPBlocks{
+								args := []string{"-m", "conntrack", "--ctstate", "NEW", "-s", srcIP[0], "-j", "ACCEPT"}
+								iptablesCmdHandler.Insert("filter", "INPUT", 1, args...)
+								if err != nil {
+									return fmt.Errorf("append failed: %s", err)
+								}
+							}
+						} else {
+							for _, srcPod := range ingressRule.srcPods{
+								for _, port := range ingressRule.ports{
+									args := []string{"-m", "conntrack", "--ctstate", "NEW", "-s", srcPod.ip, "-p", port.protocol, "--dport",port.port, "-j", "ACCEPT"}
+									iptablesCmdHandler.Insert("filter", "INPUT", 1, args...)
+									if err != nil {
+										return fmt.Errorf("append failed: %s", err)
+									}
+								}
+							}
+
+							for _, srcIP := range ingressRule.srcIPBlocks{
+								for _, port := range ingressRule.ports{
+									args := []string{"-m", "conntrack", "--ctstate", "NEW", "-s", srcIP[0], "-p", port.protocol, "--dport",port.port, "-j", "ACCEPT"}
+									iptablesCmdHandler.Insert("filter", "INPUT", 1, args...)
+									if err != nil {
+										return fmt.Errorf("append failed: %s", err)
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		//set egress
+		if policy.policyType == kubeEgressPolicyType || 
+		policy.policyType == kubeBothPolicyType {
+			for _, pod := range policy.targetPods{
+				iptablesCmdHandler.SetNspid(strconv.Itoa(pod.pid))
+				//获取是否已经设置过
+				rules, err := iptablesCmdHandler.List("filter", "OUTPUT")
+				if err != nil {
+					klog.Fatalf("failed to list rules in filter table OUT chain due to %s", err.Error())
+				}
+	
+				if len(rules) == 1 {
+					//拒绝所有的其他请求
+					args := []string{"-m", "conntrack", "--ctstate", "NEW", "-j", "REJECT"}
+					iptablesCmdHandler.Insert("filter", "OUTPUT", 1, args...)
+					if err != nil {
+						return fmt.Errorf("append failed: %s", err)
+					}
+				}
+
+				//增加新的允许的iptables
+				for _, egressRule := range policy.egressRules{
+					if egressRule.matchAllDestinations{
+						if egressRule.matchAllPorts{
+							args := []string{"-m", "conntrack", "--ctstate", "NEW", "-j", "ACCEPT"}
+							iptablesCmdHandler.Insert("filter", "OUTPUT", 1, args...)
+							if err != nil {
+								return fmt.Errorf("append failed: %s", err)
+							}
+						} else {
+							for _, port := range egressRule.ports{
+								args := []string{"-m", "conntrack", "--ctstate", "NEW", "-p", port.protocol, "--dport",port.port, "-j", "ACCEPT"}
+								iptablesCmdHandler.Insert("filter", "OUTPUT", 1, args...)
+								if err != nil {
+									return fmt.Errorf("append failed: %s", err)
+								}
+							}
+						}
+					} else{
+						if egressRule.matchAllPorts{
+							for _, dstPod := range egressRule.dstPods{
+								args := []string{"-m", "conntrack", "--ctstate", "NEW", "-d", dstPod.ip, "-j", "ACCEPT"}
+								iptablesCmdHandler.Insert("filter", "OUTPUT", 1, args...)
+								if err != nil {
+									return fmt.Errorf("append failed: %s", err)
+								}
+							}
+
+							for _, disIP := range egressRule.dstIPBlocks{
+								args := []string{"-m", "conntrack", "--ctstate", "NEW", "-d", disIP[0], "-j", "ACCEPT"}
+								iptablesCmdHandler.Insert("filter", "OUTPUT", 1, args...)
+								if err != nil {
+									return fmt.Errorf("append failed: %s", err)
+								}
+							}
+						} else {
+							for _, dstPod := range egressRule.dstPods{
+								for _, port := range egressRule.ports{
+									args := []string{"-m", "conntrack", "--ctstate", "NEW", "-d", dstPod.ip, "-p", port.protocol, "--dport",port.port, "-j", "ACCEPT"}
+									iptablesCmdHandler.Insert("filter", "OUTPUT", 1, args...)
+									if err != nil {
+										return fmt.Errorf("append failed: %s", err)
+									}
+								}
+							}
+
+							for _, dstIP := range egressRule.dstIPBlocks{
+								for _, port := range egressRule.ports{
+									args := []string{"-m", "conntrack", "--ctstate", "NEW", "-d", dstIP[0], "-p", port.protocol, "--dport",port.port, "-j", "ACCEPT"}
+									iptablesCmdHandler.Insert("filter", "OUTPUT", 1, args...)
+									if err != nil {
+										return fmt.Errorf("append failed: %s", err)
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// Sync synchronizes iptables to desired state of network policies
+func (npc *NetworkPolicyController) fullPolicySync() {
+
+	var err error
+	var networkPoliciesInfo []networkPolicyInfo
+	npc.mu.Lock()
+	defer npc.mu.Unlock()
+
+	healthcheck.SendHeartBeat(npc.healthChan, "NPC")
+	start := time.Now()
+	syncVersion := strconv.FormatInt(start.UnixNano(), syncVersionBase)
+	defer func() {
+		endTime := time.Since(start)
+		if npc.MetricsEnabled {
+			metrics.ControllerIptablesSyncTime.Observe(endTime.Seconds())
+		}
+		klog.V(1).Infof("sync iptables took %v", endTime)
+	}()
+
+	klog.V(1).Infof("Starting sync of iptables with version: %s", syncVersion)
+
+	//先清空所有的pod的iptables规则
+	err = npc.clearAllNetworkPolicies()
+	if err != nil {
+		klog.Errorf("Clear all network policies failed: %v", err.Error())
+		return
+	}
+
+	//获取所有的策略信息
+	networkPoliciesInfo, err = npc.buildNetworkPoliciesInfo()
+	if err != nil {
+		klog.Errorf("Aborting sync. Failed to build network policies: %v", err.Error())
+		return
+	}
+
+	fmt.Println("----- print policy ----------")
+	fmt.Printf("%+v\n", networkPoliciesInfo)
+
+
+	// for index, policy := range networkPoliciesInfo {
+	// 	fmt.Printf("%+v", policy)
+	// 	fmt.Printf("index = %d, %s-%s \n", index, policy.name, policy.namespace);
+	// }
+
+	fmt.Print("\n\n")
+
+	npc.syncPodNetworkPolicy(networkPoliciesInfo)
+	if err != nil {
+		klog.Errorf("syncPodNetworkPolicy failed: %v", err.Error())
+		return
+	}
+}
+
+/*
 // Sync synchronizes iptables to desired state of network policies
 func (npc *NetworkPolicyController) fullPolicySync() {
 
@@ -284,6 +591,7 @@ func (npc *NetworkPolicyController) fullPolicySync() {
 		return
 	}
 }
+*/
 
 // Creates custom chains KUBE-ROUTER-INPUT, KUBE-ROUTER-FORWARD, KUBE-ROUTER-OUTPUT
 // and following rules in the filter table to jump from builtin chain to custom chain
@@ -429,7 +737,6 @@ func (npc *NetworkPolicyController) ensureExplicitAccept() {
 
 // Creates custom chains KUBE-NWPLCY-DEFAULT
 func (npc *NetworkPolicyController) ensureDefaultNetworkPolicyChain() {
-
 	iptablesCmdHandler, err := iptables.New()
 	if err != nil {
 		klog.Fatalf("Failed to initialize iptables executor due to %s", err.Error())

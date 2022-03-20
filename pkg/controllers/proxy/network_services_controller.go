@@ -23,7 +23,7 @@ import (
 	"github.com/cloudnativelabs/kube-router/pkg/metrics"
 	"github.com/cloudnativelabs/kube-router/pkg/options"
 	"github.com/cloudnativelabs/kube-router/pkg/utils"
-	"github.com/coreos/go-iptables/iptables"
+	"github.com/butterflyy/go-iptables/iptables"
 	"github.com/docker/docker/client"
 	"github.com/moby/ipvs"
 	"github.com/prometheus/client_golang/prometheus"

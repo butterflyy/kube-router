@@ -12,7 +12,7 @@ import (
 	"github.com/cloudnativelabs/kube-router/pkg/controllers/proxy"
 	"github.com/cloudnativelabs/kube-router/pkg/controllers/routing"
 	"github.com/cloudnativelabs/kube-router/pkg/healthcheck"
-	"github.com/cloudnativelabs/kube-router/pkg/metrics"
+	//"github.com/cloudnativelabs/kube-router/pkg/metrics"
 	"github.com/cloudnativelabs/kube-router/pkg/options"
 	"github.com/cloudnativelabs/kube-router/pkg/version"
 	"k8s.io/klog/v2"
@@ -76,10 +76,10 @@ func (kr *KubeRouter) Run() error {
 	var ipsetMutex sync.Mutex
 	var wg sync.WaitGroup
 
-	if !(kr.Config.RunFirewall || kr.Config.RunServiceProxy || kr.Config.RunRouter) {
-		klog.Info("Router, Firewall or Service proxy functionality must be specified. Exiting!")
-		os.Exit(0)
-	}
+	// if !(kr.Config.RunFirewall || kr.Config.RunServiceProxy || kr.Config.RunRouter) {
+	// 	klog.Info("Router, Firewall or Service proxy functionality must be specified. Exiting!")
+	// 	os.Exit(0)
+	// }
 
 	healthChan := make(chan *healthcheck.ControllerHeartbeat, healthControllerChannelLength)
 	defer close(healthChan)
@@ -93,10 +93,10 @@ func (kr *KubeRouter) Run() error {
 	go hc.RunServer(stopCh, &wg)
 
 	informerFactory := informers.NewSharedInformerFactory(kr.Client, 0)
-	svcInformer := informerFactory.Core().V1().Services().Informer()
-	epInformer := informerFactory.Core().V1().Endpoints().Informer()
+	//svcInformer := informerFactory.Core().V1().Services().Informer()
+	//epInformer := informerFactory.Core().V1().Endpoints().Informer()
 	podInformer := informerFactory.Core().V1().Pods().Informer()
-	nodeInformer := informerFactory.Core().V1().Nodes().Informer()
+	//nodeInformer := informerFactory.Core().V1().Nodes().Informer()
 	nsInformer := informerFactory.Core().V1().Namespaces().Informer()
 	npInformer := informerFactory.Networking().V1().NetworkPolicies().Informer()
 	informerFactory.Start(stopCh)
@@ -106,82 +106,82 @@ func (kr *KubeRouter) Run() error {
 		return errors.New("Failed to synchronize cache: " + err.Error())
 	}
 
-	hc.SetAlive()
-	wg.Add(1)
-	go hc.RunCheck(healthChan, stopCh, &wg)
+	// hc.SetAlive()
+	// wg.Add(1)
+	// go hc.RunCheck(healthChan, stopCh, &wg)
 
-	if kr.Config.MetricsPort > 0 && kr.Config.MetricsPort < 65535 {
-		kr.Config.MetricsEnabled = true
-		mc, err := metrics.NewMetricsController(kr.Config)
-		if err != nil {
-			return errors.New("Failed to create metrics controller: " + err.Error())
-		}
-		wg.Add(1)
-		go mc.Run(healthChan, stopCh, &wg)
+	// if kr.Config.MetricsPort > 0 && kr.Config.MetricsPort < 65535 {
+	// 	kr.Config.MetricsEnabled = true
+	// 	mc, err := metrics.NewMetricsController(kr.Config)
+	// 	if err != nil {
+	// 		return errors.New("Failed to create metrics controller: " + err.Error())
+	// 	}
+	// 	wg.Add(1)
+	// 	go mc.Run(healthChan, stopCh, &wg)
 
-	} else {
-		klog.Errorf("Metrics port must be over 0 and under 65535, given port: %d", kr.Config.MetricsPort)
-		kr.Config.MetricsEnabled = false
-	}
+	// } else {
+	// 	klog.Errorf("Metrics port must be over 0 and under 65535, given port: %d", kr.Config.MetricsPort)
+	// 	kr.Config.MetricsEnabled = false
+	// }
 
-	if kr.Config.BGPGracefulRestart {
-		if kr.Config.BGPGracefulRestartTime > time.Second*4095 {
-			return errors.New("BGPGracefulRestartTime should be less than 4095 seconds")
-		}
-		if kr.Config.BGPGracefulRestartTime <= 0 {
-			return errors.New("BGPGracefulRestartTime must be positive")
-		}
+	// if kr.Config.BGPGracefulRestart {
+	// 	if kr.Config.BGPGracefulRestartTime > time.Second*4095 {
+	// 		return errors.New("BGPGracefulRestartTime should be less than 4095 seconds")
+	// 	}
+	// 	if kr.Config.BGPGracefulRestartTime <= 0 {
+	// 		return errors.New("BGPGracefulRestartTime must be positive")
+	// 	}
 
-		if kr.Config.BGPGracefulRestartDeferralTime > time.Hour*18 {
-			return errors.New("BGPGracefulRestartDeferralTime should be less than 18 hours")
-		}
-		if kr.Config.BGPGracefulRestartDeferralTime <= 0 {
-			return errors.New("BGPGracefulRestartDeferralTime must be positive")
-		}
-	}
+	// 	if kr.Config.BGPGracefulRestartDeferralTime > time.Hour*18 {
+	// 		return errors.New("BGPGracefulRestartDeferralTime should be less than 18 hours")
+	// 	}
+	// 	if kr.Config.BGPGracefulRestartDeferralTime <= 0 {
+	// 		return errors.New("BGPGracefulRestartDeferralTime must be positive")
+	// 	}
+	// }
 
-	if kr.Config.RunRouter {
-		nrc, err := routing.NewNetworkRoutingController(kr.Client, kr.Config,
-			nodeInformer, svcInformer, epInformer, &ipsetMutex)
-		if err != nil {
-			return errors.New("Failed to create network routing controller: " + err.Error())
-		}
+	// if kr.Config.RunRouter {
+	// 	nrc, err := routing.NewNetworkRoutingController(kr.Client, kr.Config,
+	// 		nodeInformer, svcInformer, epInformer, &ipsetMutex)
+	// 	if err != nil {
+	// 		return errors.New("Failed to create network routing controller: " + err.Error())
+	// 	}
 
-		nodeInformer.AddEventHandler(nrc.NodeEventHandler)
-		svcInformer.AddEventHandler(nrc.ServiceEventHandler)
-		epInformer.AddEventHandler(nrc.EndpointsEventHandler)
+	// 	nodeInformer.AddEventHandler(nrc.NodeEventHandler)
+	// 	svcInformer.AddEventHandler(nrc.ServiceEventHandler)
+	// 	epInformer.AddEventHandler(nrc.EndpointsEventHandler)
 
-		wg.Add(1)
-		go nrc.Run(healthChan, stopCh, &wg)
+	// 	wg.Add(1)
+	// 	go nrc.Run(healthChan, stopCh, &wg)
 
-		// wait for the pod networking related firewall rules to be setup before network policies
-		if kr.Config.RunFirewall {
-			nrc.CNIFirewallSetup.L.Lock()
-			nrc.CNIFirewallSetup.Wait()
-			nrc.CNIFirewallSetup.L.Unlock()
-		}
-	}
+	// 	// wait for the pod networking related firewall rules to be setup before network policies
+	// 	if kr.Config.RunFirewall {
+	// 		nrc.CNIFirewallSetup.L.Lock()
+	// 		nrc.CNIFirewallSetup.Wait()
+	// 		nrc.CNIFirewallSetup.L.Unlock()
+	// 	}
+	// }
 
-	if kr.Config.RunServiceProxy {
-		nsc, err := proxy.NewNetworkServicesController(kr.Client, kr.Config,
-			svcInformer, epInformer, podInformer, &ipsetMutex)
-		if err != nil {
-			return errors.New("Failed to create network services controller: " + err.Error())
-		}
+	// if kr.Config.RunServiceProxy {
+	// 	nsc, err := proxy.NewNetworkServicesController(kr.Client, kr.Config,
+	// 		svcInformer, epInformer, podInformer, &ipsetMutex)
+	// 	if err != nil {
+	// 		return errors.New("Failed to create network services controller: " + err.Error())
+	// 	}
 
-		svcInformer.AddEventHandler(nsc.ServiceEventHandler)
-		epInformer.AddEventHandler(nsc.EndpointsEventHandler)
+	// 	svcInformer.AddEventHandler(nsc.ServiceEventHandler)
+	// 	epInformer.AddEventHandler(nsc.EndpointsEventHandler)
 
-		wg.Add(1)
-		go nsc.Run(healthChan, stopCh, &wg)
+	// 	wg.Add(1)
+	// 	go nsc.Run(healthChan, stopCh, &wg)
 
-		// wait for the proxy firewall rules to be setup before network policies
-		if kr.Config.RunFirewall {
-			nsc.ProxyFirewallSetup.L.Lock()
-			nsc.ProxyFirewallSetup.Wait()
-			nsc.ProxyFirewallSetup.L.Unlock()
-		}
-	}
+	// 	// wait for the proxy firewall rules to be setup before network policies
+	// 	if kr.Config.RunFirewall {
+	// 		nsc.ProxyFirewallSetup.L.Lock()
+	// 		nsc.ProxyFirewallSetup.Wait()
+	// 		nsc.ProxyFirewallSetup.L.Unlock()
+	// 	}
+	// }
 
 	if kr.Config.RunFirewall {
 		npc, err := netpol.NewNetworkPolicyController(kr.Client,

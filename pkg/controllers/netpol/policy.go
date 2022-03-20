@@ -9,8 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudnativelabs/kube-router/pkg/cri"
 	"github.com/cloudnativelabs/kube-router/pkg/metrics"
 	"github.com/cloudnativelabs/kube-router/pkg/utils"
+	"github.com/docker/docker/client"
+	"golang.org/x/net/context"
 	api "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -443,6 +446,38 @@ func (npc *NetworkPolicyController) appendRuleToPolicyChain(policyChainName, com
 	return nil
 }
 
+func (npc *NetworkPolicyController) getPodPid(containerURL string) (int, error) {
+		_, containerID, err := cri.EndpointParser(containerURL)
+		if err != nil {
+			return 0, err
+		}
+
+		if containerID == "" {
+			return 0, fmt.Errorf("containerID is empty")
+		}
+
+		dockerClient, err := client.NewClientWithOpts(client.FromEnv)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get docker client due to %v", err)
+		}
+	
+		defer utils.CloseCloserDisregardError(dockerClient)
+
+		//获取pod的pid
+		containerSpec, err := dockerClient.ContainerInspect(context.Background(), containerID)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get docker container spec due to %v", err)
+		}
+	
+		pid := containerSpec.State.Pid
+		if pid == 0{
+			return 0, fmt.Errorf("Pid is 0, containerID is %v", containerID)
+		}
+
+		return containerSpec.State.Pid, nil
+}
+
+
 func (npc *NetworkPolicyController) buildNetworkPoliciesInfo() ([]networkPolicyInfo, error) {
 
 	NetworkPolicies := make([]networkPolicyInfo, 0)
@@ -487,10 +522,45 @@ func (npc *NetworkPolicyController) buildNetworkPoliciesInfo() ([]networkPolicyI
 				if !isNetPolActionable(matchingPod) {
 					continue
 				}
+
+				//不是当前node的pod就不处理
+				if npc.nodeIP.String() != matchingPod.Status.HostIP{
+					continue
+				}
+
+				if matchingPod.Spec.HostNetwork{
+					continue
+				}
+
+				ready := false
+				for _, condition := range(matchingPod.Status.Conditions){
+					if condition.Type == "Ready" && condition.Status == "True"{
+						ready = true
+						break
+					}
+				}
+		
+				if !ready{
+					continue
+				}
+
+				containerURL := matchingPod.Status.ContainerStatuses[0].ContainerID
+
+				pid, ok := npc.podPids[containerURL]
+				if !ok {
+					pid, err = npc.getPodPid(containerURL)
+					if err != nil{
+						klog.Errorf("get pod ns pid failed (container=%s, pod=%s). Skipping DSR endpoint "+
+						"set up", matchingPod.Spec.Containers[0].Name, matchingPod.Name)
+						continue
+					}
+				}
+
 				newPolicy.targetPods[matchingPod.Status.PodIP] = podInfo{ip: matchingPod.Status.PodIP,
 					name:      matchingPod.ObjectMeta.Name,
 					namespace: matchingPod.ObjectMeta.Namespace,
-					labels:    matchingPod.ObjectMeta.Labels}
+					labels:    matchingPod.ObjectMeta.Labels,
+				  pid: pid}
 				npc.grabNamedPortFromPod(matchingPod, &namedPort2IngressEps)
 			}
 		}
